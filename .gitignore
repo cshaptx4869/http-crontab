@@ -2,3 +2,4 @@
 /.vscode
 /vendor
 composer.lock
+test.php

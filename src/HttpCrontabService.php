@@ -3,7 +3,8 @@
 
 namespace Fairy;
 
-
+use FastRoute\Dispatcher;
+use FastRoute\RouteCollector;
 use Workerman\Connection\TcpConnection;
 use Workerman\Crontab\Crontab;
 use Workerman\MySQL\Connection;
@@ -111,9 +112,9 @@ class HttpCrontabService
     private $lessPhpVersion = '5.3.3';
 
     /**
-     * @var Request
+     * @var Dispatcher
      */
-    private $request;
+    private $dispatcher;
 
     /**
      * @param string $socketName 不填写表示不监听任何端口,格式为 <协议>://<监听地址> 协议支持 tcp、udp、unix、http、websocket、text
@@ -122,6 +123,7 @@ class HttpCrontabService
     public function __construct($socketName = '', array $contextOption = [])
     {
         $this->checkEnv();
+        $this->registerRoute();
         $this->initWorker($socketName, $contextOption);
     }
 
@@ -139,6 +141,23 @@ class HttpCrontabService
             $this->worker->transport = 'ssl';//设置当前Worker实例所使用的传输层协议，目前只支持3种(tcp、udp、ssl)。默认为tcp。
         }
         $this->registerCallback();
+    }
+
+    /**
+     * 注册路由
+     */
+    private function registerRoute()
+    {
+        $this->dispatcher = \FastRoute\simpleDispatcher(function (RouteCollector $r) {
+            $r->get(self::INDEX_PATH, [$this, 'crontabIndex']);
+            $r->post(self::ADD_PATH, [$this, 'crontabAdd']);
+            $r->post(self::MODIFY_PATH, [$this, 'crontabModify']);
+            $r->post(self::DELETE_PATH, [$this, 'crontabDelete']);
+            $r->post(self::RELOAD_PATH, [$this, 'crontabReload']);
+            $r->get(self::FLOW_PATH, [$this, 'crontabFlow']);
+            $r->get(self::POOL_PATH, [$this, 'crontabPool']);
+            $r->get(self::PING_PATH, [$this, 'crontabPong']);
+        });
     }
 
     /**
@@ -371,48 +390,18 @@ class HttpCrontabService
     public function onMessage($connection, $request)
     {
         if ($request instanceof Request) {
-            $this->request = $request;
-            switch (ltrim($request->path(), '/')) {
-                case self::INDEX_PATH:
-                    list($page, $limit, $where) = $this->buildTableParames();
-                    $response = $this->crontabIndex($page, $limit, $where);
+            $routeInfo = $this->dispatcher->dispatch($request->method(), ltrim($request->path(), '/'));
+            switch ($routeInfo[0]) {
+                case Dispatcher::NOT_FOUND:
+                    $connection->send($this->response('', 'Not Found', 404));
                     break;
-                case self::ADD_PATH:
-                    if ($post = $request->post()) {
-                        $response = $this->crontabAdd($post);
-                    }
+                case Dispatcher::METHOD_NOT_ALLOWED:
+                    $connection->send($this->response('', 'Method Not Allowed', 405));
                     break;
-                case self::MODIFY_PATH:
-                    if ($post = $request->post()) {
-                        $response = $this->crontabModify($post['id'], $post['field'], $post['value']);
-                    }
-                    break;
-                case self::DELETE_PATH:
-                    $id = $request->post('id', '');
-                    if (!empty($id)) {
-                        $response = $this->crontabDelete($id);
-                    }
-                    break;
-                case self::RELOAD_PATH:
-                    $id = $request->post('id', '');
-                    if (!empty($id)) {
-                        $response = $this->crontabReload($id);
-                    }
-                    break;
-                case self::FLOW_PATH:
-                    list($page, $limit, $where, $excludeFields) = $this->buildTableParames(['month']);
-                    $request->get('sid') && $where[] = ['sid', '=', $request->get('sid')];
-                    $response = $this->crontabFlow($page, $limit, $where, $excludeFields);
-                    break;
-                case self::POOL_PATH:
-                    $response = $this->crontabPool();
-                    break;
-                case self::PING_PATH:
-                default:
-                    $response = 'pong';
+                case Dispatcher::FOUND:
+                    $connection->send($this->response(call_user_func($routeInfo[1], $request)));
                     break;
             }
-            $connection->send($this->response(isset($response) ? $response : false));
         }
     }
 
@@ -448,16 +437,6 @@ class HttpCrontabService
 
     }
 
-    private function getCrontabById($id)
-    {
-        return $this->dbPool[$this->worker->id]
-            ->select('*')
-            ->from($this->systemCrontabTable)
-            ->where('id= :id')
-            ->bindValues(['id' => $id])
-            ->row();
-    }
-
     /**
      * 初始化定时任务
      * @return bool
@@ -483,13 +462,12 @@ class HttpCrontabService
 
     /**
      * 定时器列表
-     * @param int $page
-     * @param int $limit
-     * @param array $where
+     * @param Request $request
      * @return array
      */
-    private function crontabIndex($page, $limit, $where)
+    private function crontabIndex($request)
     {
+        list($page, $limit, $where) = $this->buildTableParames($request->get());
         list($whereStr, $bindValues) = $this->parseWhere($where);
 
         $data = $this->dbPool[$this->worker->id]
@@ -514,11 +492,12 @@ class HttpCrontabService
 
     /**
      * 创建定时任务
-     * @param array $data
+     * @param Request $request
      * @return bool
      */
-    private function crontabAdd(array $data)
+    private function crontabAdd($request)
     {
+        $data = $request->post();
         $data['create_time'] = $data['update_time'] = time();
         $id = $this->dbPool[$this->worker->id]
             ->insert($this->systemCrontabTable)
@@ -531,26 +510,25 @@ class HttpCrontabService
 
     /**
      * 修改定时器
-     * @param $id
-     * @param $field
-     * @param $value
+     * @param Request $request
      * @return mixed
      */
-    private function crontabModify($id, $field, $value)
+    private function crontabModify($request)
     {
-        if (in_array($field, ['status', 'sort', 'remark', 'title', 'frequency'])) {
+        $post = $request->post();
+        if (in_array($post['field'], ['status', 'sort', 'remark', 'title', 'frequency'])) {
             $row = $this->dbPool[$this->worker->id]
                 ->update($this->systemCrontabTable)
-                ->cols([$field])
+                ->cols([$post['field']])
                 ->where('id = :id')
-                ->bindValues(['id' => $id, $field => $value])
+                ->bindValues(['id' => $post['id'], $post['field'] => $post['value']])
                 ->query();
 
-            if ($field === 'status') {
-                if ($value == self::NORMAL_STATUS) {
-                    $this->crontabRun($id);
+            if ($post['field'] === 'status') {
+                if ($post['value'] == self::NORMAL_STATUS) {
+                    $this->crontabRun($post['id']);
                 } else {
-                    $this->crontabDelete($id, false);
+                    $this->crontabDelete($post['id'], false);
                 }
             }
 
@@ -562,28 +540,30 @@ class HttpCrontabService
 
     /**
      * 清除定时任务
-     * @param $id
+     * @param Request $request
      * @param bool $db 是否删除数据
      * @return bool|mixed
      */
-    private function crontabDelete($id, $db = true)
+    private function crontabDelete($request, $db = true)
     {
-        $ids = explode(',', $id);
+        if ($id = $request->post('id')) {
+            $ids = explode(',', $id);
 
-        foreach ($ids as $item) {
-            if (isset($this->crontabPool[$item])) {
-                $this->crontabPool[$item]['crontab']->destroy();
-                unset($this->crontabPool[$item]);
+            foreach ($ids as $item) {
+                if (isset($this->crontabPool[$item])) {
+                    $this->crontabPool[$item]['crontab']->destroy();
+                    unset($this->crontabPool[$item]);
+                }
             }
-        }
 
-        if ($db) {
-            $rows = $this->dbPool[$this->worker->id]
-                ->delete($this->systemCrontabTable)
-                ->where('id in (' . $id . ')')
-                ->query();
+            if ($db) {
+                $rows = $this->dbPool[$this->worker->id]
+                    ->delete($this->systemCrontabTable)
+                    ->where('id in (' . $id . ')')
+                    ->query();
 
-            return $rows ? true : false;
+                return $rows ? true : false;
+            }
         }
 
         return true;
@@ -591,12 +571,12 @@ class HttpCrontabService
 
     /**
      * 重启定时任务
-     * @param $id
+     * @param Request $request
      * @return bool
      */
-    private function crontabReload($id)
+    private function crontabReload(Request $request)
     {
-        $ids = explode(',', $id);
+        $ids = explode(',', $request->post('id'));
 
         foreach ($ids as $id) {
             $this->crontabDelete($id, false);
@@ -680,15 +660,23 @@ class HttpCrontabService
     }
 
     /**
+     * 心跳
+     * @return string
+     */
+    private function crontabPong()
+    {
+        return 'pong';
+    }
+
+    /**
      * 执行日志
-     * @param $page
-     * @param $limit
-     * @param $where
-     * @param $excludeFields
+     * @param Request $request
      * @return array
      */
-    private function crontabFlow($page, $limit, $where, $excludeFields)
+    private function crontabFlow($request)
     {
+        list($page, $limit, $where, $excludeFields) = $this->buildTableParames($request->get(), ['month']);
+        $request->get('sid') && $where[] = ['sid', '=', $request->get('sid')];
         list($whereStr, $bindValues) = $this->parseWhere($where);
 
         $allTables = $this->getDbTables($this->dbConfig['database']);
@@ -966,12 +954,12 @@ SQL;
 
     /**
      * 构建请求参数
+     * @param array $get
      * @param array $excludeFields 忽略构建搜索的字段
      * @return array
      */
-    private function buildTableParames($excludeFields = [])
+    private function buildTableParames($get, $excludeFields = [])
     {
-        $get = $this->request->get();
         $page = isset($get['page']) && !empty($get['page']) ? (int)$get['page'] : 1;
         $limit = isset($get['limit']) && !empty($get['limit']) ? (int)$get['limit'] : 15;
         $filters = isset($get['filter']) && !empty($get['filter']) ? $get['filter'] : '{}';
@@ -1003,7 +991,7 @@ SQL;
                     $where[] = [$key, 'LIKE', "%{$val}"];
                     break;
                 case 'range':
-                    [$beginTime, $endTime] = explode(' - ', $val);
+                    list($beginTime, $endTime) = explode(' - ', $val);
                     $where[] = [$key, '>=', strtotime($beginTime)];
                     $where[] = [$key, '<=', strtotime($endTime)];
                     break;
@@ -1046,6 +1034,7 @@ SQL;
     /**
      * 运行所有Worker实例
      * Worker::runAll()执行后将永久阻塞
+     * Worker::runAll()调用前运行的代码都是在主进程运行的，onXXX回调运行的代码都属于子进程
      * windows版本的workerman不支持在同一个文件中实例化多个Worker
      * windows版本的workerman需要将多个Worker实例初始化放在不同的文件中
      */
