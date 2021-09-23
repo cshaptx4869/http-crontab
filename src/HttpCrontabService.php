@@ -117,6 +117,12 @@ class HttpCrontabService
     private $dispatcher;
 
     /**
+     * 安全秘钥
+     * @var string
+     */
+    private $safeKey;
+
+    /**
      * @param string $socketName 不填写表示不监听任何端口,格式为 <协议>://<监听地址> 协议支持 tcp、udp、unix、http、websocket、text
      * @param array $contextOption socket 上下文选项 http://php.net/manual/zh/context.socket.php
      */
@@ -161,13 +167,23 @@ class HttpCrontabService
     }
 
     /**
-     * 是否调试模式
-     * @param bool $bool
+     * 启用安全模式
      * @return $this
      */
-    public function setDebug($bool = false)
+    public function setSafeKey($key)
     {
-        $this->debug = $bool;
+        $this->safeKey = $key;
+
+        return $this;
+    }
+
+    /**
+     * 是否调试模式
+     * @return $this
+     */
+    public function setDebug()
+    {
+        $this->debug = true;
 
         return $this;
     }
@@ -231,12 +247,11 @@ class HttpCrontabService
     /**
      * 以daemon(守护进程)方式运行
      * windows系统不支持此特性
-     * @param bool $bool
      * @return $this
      */
-    public function setDaemon($bool = false)
+    public function setDaemon()
     {
-        Worker::$daemonize = $bool;
+        Worker::$daemonize = true;
 
         return $this;
     }
@@ -390,17 +405,21 @@ class HttpCrontabService
     public function onMessage($connection, $request)
     {
         if ($request instanceof Request) {
-            $routeInfo = $this->dispatcher->dispatch($request->method(), ltrim($request->path(), '/'));
-            switch ($routeInfo[0]) {
-                case Dispatcher::NOT_FOUND:
-                    $connection->send($this->response('', 'Not Found', 404));
-                    break;
-                case Dispatcher::METHOD_NOT_ALLOWED:
-                    $connection->send($this->response('', 'Method Not Allowed', 405));
-                    break;
-                case Dispatcher::FOUND:
-                    $connection->send($this->response(call_user_func($routeInfo[1], $request)));
-                    break;
+            if (!is_null($this->safeKey) && $request->header('key') !== $this->safeKey) {
+                $connection->send($this->response('', 'Connection Not Allowed', 403));
+            } else {
+                $routeInfo = $this->dispatcher->dispatch($request->method(), ltrim($request->path(), '/'));
+                switch ($routeInfo[0]) {
+                    case Dispatcher::NOT_FOUND:
+                        $connection->send($this->response('', 'Not Found', 404));
+                        break;
+                    case Dispatcher::METHOD_NOT_ALLOWED:
+                        $connection->send($this->response('', 'Method Not Allowed', 405));
+                        break;
+                    case Dispatcher::FOUND:
+                        $connection->send($this->response(call_user_func($routeInfo[1], $request)));
+                        break;
+                }
             }
         }
     }
@@ -528,7 +547,10 @@ class HttpCrontabService
                 if ($post['value'] == self::NORMAL_STATUS) {
                     $this->crontabRun($post['id']);
                 } else {
-                    $this->crontabDelete($post['id'], false);
+                    if (isset($this->crontabPool[$post['id']])) {
+                        $this->crontabPool[$post['id']]['crontab']->destroy();
+                        unset($this->crontabPool[$post['id']]);
+                    }
                 }
             }
 
@@ -541,10 +563,9 @@ class HttpCrontabService
     /**
      * 清除定时任务
      * @param Request $request
-     * @param bool $db 是否删除数据
      * @return bool|mixed
      */
-    private function crontabDelete($request, $db = true)
+    private function crontabDelete($request)
     {
         if ($id = $request->post('id')) {
             $ids = explode(',', $id);
@@ -556,14 +577,12 @@ class HttpCrontabService
                 }
             }
 
-            if ($db) {
-                $rows = $this->dbPool[$this->worker->id]
-                    ->delete($this->systemCrontabTable)
-                    ->where('id in (' . $id . ')')
-                    ->query();
+            $rows = $this->dbPool[$this->worker->id]
+                ->delete($this->systemCrontabTable)
+                ->where('id in (' . $id . ')')
+                ->query();
 
-                return $rows ? true : false;
-            }
+            return $rows ? true : false;
         }
 
         return true;
@@ -579,7 +598,10 @@ class HttpCrontabService
         $ids = explode(',', $request->post('id'));
 
         foreach ($ids as $id) {
-            $this->crontabDelete($id, false);
+            if (isset($this->crontabPool[$id])) {
+                $this->crontabPool[$id]['crontab']->destroy();
+                unset($this->crontabPool[$id]);
+            }
             $this->dbPool[$this->worker->id]
                 ->update($this->systemCrontabTable)
                 ->cols(['status'])
@@ -947,7 +969,7 @@ SQL;
 
     private function response($data = '', $msg = '信息调用成功！', $code = 200)
     {
-        return new Response(200, [
+        return new Response($code, [
             'Content-Type' => 'application/json; charset=utf-8',
         ], json_encode(['code' => $code, 'data' => $data, 'msg' => $msg]));
     }
