@@ -60,7 +60,8 @@ class HttpCrontabService
         'username' => 'root',
         'password' => 'root',
         'database' => 'test',
-        'charset' => 'utf8mb4'
+        'charset' => 'utf8mb4',
+        'prefix' => '',
     ];
 
     /**
@@ -317,7 +318,10 @@ class HttpCrontabService
     public function setDbConfig(array $config = [])
     {
         $this->dbConfig = array_merge($this->dbConfig, $config);
-
+        if ($this->dbConfig['prefix']) {
+            $this->systemCrontabTable = $this->dbConfig['prefix'] . $this->systemCrontabTable;
+            $this->systemCrontabFlowTable = $this->dbConfig['prefix'] . $this->systemCrontabFlowTable;
+        }
         return $this;
     }
 
