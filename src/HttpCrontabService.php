@@ -23,20 +23,14 @@ class HttpCrontabService
     const NORMAL_STATUS = '1';
 
     //请求接口地址
-    const INDEX_PATH = 'crontab/index';
-    const ADD_PATH = 'crontab/add';
-    const MODIFY_PATH = 'crontab/modify';
-    const RELOAD_PATH = 'crontab/reload';
-    const DELETE_PATH = 'crontab/delete';
-    const FLOW_PATH = 'crontab/flow';
-    const POOL_PATH = 'crontab/pool';
-    const PING_PATH = 'crontab/ping';
-
-    /**
-     * 监听任何端口
-     * @var string
-     */
-    private static $socketName = 'http://127.0.0.1:2345';
+    const INDEX_PATH = '/crontab/index';
+    const ADD_PATH = '/crontab/add';
+    const MODIFY_PATH = '/crontab/modify';
+    const RELOAD_PATH = '/crontab/reload';
+    const DELETE_PATH = '/crontab/delete';
+    const FLOW_PATH = '/crontab/flow';
+    const POOL_PATH = '/crontab/pool';
+    const PING_PATH = '/crontab/ping';
 
     /**
      * worker 实例
@@ -141,8 +135,8 @@ class HttpCrontabService
      */
     private function initWorker($socketName = '', $contextOption = [])
     {
-        $socketName && self::$socketName = $socketName;
-        $this->worker = new Worker(self::$socketName, $contextOption);
+        $socketName = $socketName?: 'http://127.0.0.1:2345';
+        $this->worker = new Worker($socketName, $contextOption);
         $this->worker->name = $this->workerName;
         if (isset($contextOption['ssl'])) {
             $this->worker->transport = 'ssl';//设置当前Worker实例所使用的传输层协议，目前只支持3种(tcp、udp、ssl)。默认为tcp。
@@ -412,7 +406,7 @@ class HttpCrontabService
             if (!is_null($this->safeKey) && $request->header('key') !== $this->safeKey) {
                 $connection->send($this->response('', 'Connection Not Allowed', 403));
             } else {
-                $routeInfo = $this->dispatcher->dispatch($request->method(), ltrim($request->path(), '/'));
+                $routeInfo = $this->dispatcher->dispatch($request->method(), $request->path());
                 switch ($routeInfo[0]) {
                     case Dispatcher::NOT_FOUND:
                         $connection->send($this->response('', 'Not Found', 404));
@@ -744,55 +738,6 @@ class HttpCrontabService
             ->insert($this->systemCrontabFlowTable)
             ->cols($data)
             ->query();
-    }
-
-    /**
-     * 获取socketName
-     * @return string
-     */
-    public static function getSocketName()
-    {
-        return self::$socketName;
-    }
-
-    public static function getCrontabIndexPath()
-    {
-        return self::getSocketName() . '/' . self::INDEX_PATH;
-    }
-
-    public static function getCrontabAddPath()
-    {
-        return self::getSocketName() . '/' . self::ADD_PATH;
-    }
-
-    public static function getCrontabModifyPath()
-    {
-        return self::getSocketName() . '/' . self::MODIFY_PATH;
-    }
-
-    public static function getCrontabReloadPath()
-    {
-        return self::getSocketName() . '/' . self::RELOAD_PATH;
-    }
-
-    public static function getCrontabDeletePath()
-    {
-        return self::getSocketName() . '/' . self::DELETE_PATH;
-    }
-
-    public static function getCrontabFlowPath()
-    {
-        return self::getSocketName() . '/' . self::FLOW_PATH;
-    }
-
-    public static function getCrontabPoolPath()
-    {
-        return self::getSocketName() . '/' . self::POOL_PATH;
-    }
-
-    public static function getCrontabPingPath()
-    {
-        return self::getSocketName() . '/' . self::PING_PATH;
     }
 
     /**
