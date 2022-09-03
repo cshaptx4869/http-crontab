@@ -25,6 +25,8 @@ class HttpCrontabService
     //请求接口地址
     const INDEX_PATH = '/crontab/index';
     const ADD_PATH = '/crontab/add';
+    const EDIT_PATH = '/crontab/edit';
+    const READ_PATH = '/crontab/read';
     const MODIFY_PATH = '/crontab/modify';
     const RELOAD_PATH = '/crontab/reload';
     const DELETE_PATH = '/crontab/delete';
@@ -152,6 +154,8 @@ class HttpCrontabService
         $this->dispatcher = \FastRoute\simpleDispatcher(function (RouteCollector $r) {
             $r->get(self::INDEX_PATH, [$this, 'crontabIndex']);
             $r->post(self::ADD_PATH, [$this, 'crontabAdd']);
+            $r->get(self::READ_PATH, [$this, 'crontabRead']);
+            $r->post(self::EDIT_PATH, [$this, 'crontabEdit']);
             $r->post(self::MODIFY_PATH, [$this, 'crontabModify']);
             $r->post(self::DELETE_PATH, [$this, 'crontabDelete']);
             $r->post(self::RELOAD_PATH, [$this, 'crontabReload']);
@@ -526,6 +530,68 @@ class HttpCrontabService
     }
 
     /**
+     * 读取定时任务
+     * @param Request $request
+     * @return bool
+     */
+    private function crontabRead($request)
+    {
+        $row = [];
+        if ($id = $request->get('id')) {
+            $row = $this->dbPool[$this->worker->id]
+                ->select('*')
+                ->from($this->systemCrontabTable)
+                ->where('id= :id')
+                ->bindValues(['id' => $id])
+                ->row();
+        }
+        return $row;
+    }
+
+    /**
+     * 编辑定时任务
+     * @param Request $request
+     * @return bool
+     */
+    private function crontabEdit($request)
+    {
+        if ($id = $request->get('id')) {
+            $post = $request->post();
+
+            $row = $this->dbPool[$this->worker->id]
+                ->select('*')
+                ->from($this->systemCrontabTable)
+                ->where('id= :id')
+                ->bindValues(['id' => $id])
+                ->row();
+            if (empty($row)) {
+                return false;
+            }
+
+            $rowCount = $this->dbPool[$this->worker->id]
+                ->update($this->systemCrontabTable)
+                ->cols($post)
+                ->where('id = :id')
+                ->bindValues(['id' => $id])
+                ->query();
+
+            if ($row['status'] == self::NORMAL_STATUS) {
+                if ($row['frequency'] !== $post['frequency'] || $row['shell'] !== $post['shell']) {
+                    if (isset($this->crontabPool[$id])) {
+                        $this->crontabPool[$id]['crontab']->destroy();
+                        unset($this->crontabPool[$id]);
+                    }
+                    $this->crontabRun($id);
+                }
+            }
+
+            return $rowCount ? true : false;
+        } else {
+            return false;
+        }
+    }
+
+    /**
      * 修改定时器
      * @param Request $request
      * @return mixed
@@ -533,7 +599,7 @@ class HttpCrontabService
     private function crontabModify($request)
     {
         $post = $request->post();
-        if (in_array($post['field'], ['status', 'sort', 'remark', 'title', 'frequency'])) {
+        if (in_array($post['field'], ['status', 'sort'])) {
             $row = $this->dbPool[$this->worker->id]
                 ->update($this->systemCrontabTable)
                 ->cols([$post['field']])
