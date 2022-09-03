@@ -97,6 +97,12 @@ class HttpCrontabService
     private $systemCrontabFlowTable = 'system_crontab_flow';
 
     /**
+     * 定时任务锁表
+     * @var string
+     */
+    private $systemCrontabLockTable = 'system_crontab_lock';
+
+    /**
      * 定时任务日志表后缀 按月分表
      * @var string|null
      */
@@ -319,6 +325,7 @@ class HttpCrontabService
         if ($this->dbConfig['prefix']) {
             $this->systemCrontabTable = $this->dbConfig['prefix'] . $this->systemCrontabTable;
             $this->systemCrontabFlowTable = $this->dbConfig['prefix'] . $this->systemCrontabFlowTable;
+            $this->systemCrontabLockTable = $this->dbConfig['prefix'] . $this->systemCrontabLockTable;
         }
         return $this;
     }
@@ -708,23 +715,30 @@ class HttpCrontabService
                 'remark' => $data['remark'],
                 'create_time' => date('Y-m-d H:i:s'),
                 'crontab' => new Crontab($data['frequency'], function () use ($data) {
-                    $time = time();
                     $shell = trim($data['shell']);
                     $this->debug && $this->writeln('执行定时器任务#' . $data['id'] . ' ' . $data['frequency'] . ' ' . $shell);
-                    $startTime = microtime(true);
-                    exec($shell, $output, $code);
-                    $endTime = microtime(true);
-                    $this->dbPool[$this->worker->id]->query("UPDATE {$this->systemCrontabTable} SET running_times = running_times + 1, last_running_time = {$time} WHERE id = {$data['id']}");
-                    $this->crontabRunLog([
-                        'sid' => $data['id'],
-                        'command' => $shell,
-                        'output' => join(PHP_EOL, $output),
-                        'return_var' => $code,
-                        'running_time' => round($endTime - $startTime, 6),
-                        'create_time' => $time,
-                        'update_time' => $time,
-                    ]);
-
+                    $sid = $data['id'];
+                    //防止重复执行
+                    if (!$this->isCrontabLocked($sid)) {
+                        //加锁
+                        $this->crontabLock($sid);
+                        $time = time();
+                        $startTime = microtime(true);
+                        exec($shell, $output, $code);
+                        $endTime = microtime(true);
+                        $this->dbPool[$this->worker->id]->query("UPDATE {$this->systemCrontabTable} SET running_times = running_times + 1, last_running_time = {$time} WHERE id = {$data['id']}");
+                        $this->crontabRunLog([
+                            'sid' => $data['id'],
+                            'command' => $shell,
+                            'output' => join(PHP_EOL, $output),
+                            'return_var' => $code,
+                            'running_time' => round($endTime - $startTime, 6),
+                            'create_time' => $time,
+                            'update_time' => $time,
+                        ]);
+                        //解锁
+                        $this->crontabUnlock($sid);
+                    }
                 })
             ];
         }
@@ -803,6 +817,65 @@ class HttpCrontabService
         return $this->dbPool[$this->worker->id]
             ->insert($this->systemCrontabFlowTable)
             ->cols($data)
+            ->query();
+    }
+
+    /**
+     * 是否加锁
+     * @param $sid
+     * @return bool
+     */
+    private function isCrontabLocked($sid)
+    {
+        $row = $this->dbPool[$this->worker->id]
+            ->select('*')
+            ->from($this->systemCrontabLockTable)
+            ->where('sid = :sid')
+            ->bindValues(['sid' => $sid])
+            ->row();
+        if (!$row) {
+            $now = time();
+            $this->dbPool[$this->worker->id]
+                ->insert($this->systemCrontabLockTable)
+                ->cols([
+                    'sid' => $sid,
+                    'is_lock' => 0,
+                    'create_time' => $now,
+                    'update_time' => $now
+                ])->query();
+            return false;
+        } else {
+            return $row['is_lock'] == 1;
+        }
+    }
+
+    /**
+     * 加锁
+     * @param $sid
+     * @return bool
+     */
+    private function crontabLock($sid)
+    {
+        return $this->dbPool[$this->worker->id]
+            ->update($this->systemCrontabLockTable)
+            ->cols(['is_lock' => 1, 'update_time' => time()])
+            ->where('sid = :sid')
+            ->bindValue('sid', $sid)
+            ->query();
+    }
+
+    /**
+     * 解锁
+     * @param $sid
+     * @return bool
+     */
+    private function crontabUnlock($sid)
+    {
+        return $this->dbPool[$this->worker->id]
+            ->update($this->systemCrontabLockTable)
+            ->cols(['is_lock' => 0, 'update_time' => time()])
+            ->where('sid = :sid')
+            ->bindValue('sid', $sid)
             ->query();
     }
 
@@ -911,6 +984,7 @@ class HttpCrontabService
             $allTables = $this->getDbTables($this->dbConfig['database']);
             !in_array($this->systemCrontabTable, $allTables) && $this->createSystemCrontabTable();
             !in_array($this->systemCrontabFlowTable, $allTables) && $this->createSystemCrontabFlowTable();
+            !in_array($this->systemCrontabLockTable, $allTables) && $this->createSystemCrontabLockTable();
         }
     }
 
@@ -960,8 +1034,30 @@ CREATE TABLE IF NOT EXISTS `{$this->systemCrontabFlowTable}`  (
   `create_time` int(11) NOT NULL DEFAULT 0 COMMENT '创建时间',
   `update_time` int(11) NOT NULL DEFAULT 0 COMMENT '更新时间',
   PRIMARY KEY (`id`) USING BTREE,
+  INDEX `sid`(`sid`) USING BTREE,
   INDEX `create_time`(`create_time`) USING BTREE
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '定时器任务流水表{$this->systemCrontabFlowTableSuffix}' ROW_FORMAT = DYNAMIC
+SQL;
+
+        return $this->dbPool[$this->worker->id]->query($sql);
+    }
+
+    /**
+     * 定时器任务流水表
+     */
+    private function createSystemCrontabLockTable()
+    {
+        $sql = <<<SQL
+CREATE TABLE IF NOT EXISTS `{$this->systemCrontabLockTable}`  (
+  `id` int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+  `sid` int(60) NOT NULL COMMENT '任务id',
+  `is_lock` tinyint(4) NOT NULL DEFAULT 0 COMMENT '是否锁定(0:否,1是)',
+  `create_time` int(11) NOT NULL DEFAULT 0 COMMENT '创建时间',
+  `update_time` int(11) NOT NULL DEFAULT 0 COMMENT '更新时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  INDEX `sid`(`sid`) USING BTREE,
+  INDEX `create_time`(`create_time`) USING BTREE
+) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '定时器任务锁表' ROW_FORMAT = DYNAMIC
 SQL;
 
         return $this->dbPool[$this->worker->id]->query($sql);
