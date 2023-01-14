@@ -861,6 +861,18 @@ class HttpCrontabService
     }
 
     /**
+     * 重置锁
+     * @return mixed|string|null
+     */
+    private function crontabLockReset()
+    {
+        return $this->db
+            ->update($this->systemCrontabLockTable)
+            ->cols(['is_lock' => 0, 'update_time' => time()])
+            ->query();
+    }
+
+    /**
      * 函数是否被禁用
      * @param $method
      * @return bool
@@ -965,7 +977,11 @@ class HttpCrontabService
             $allTables = $this->getDbTables($this->dbConfig['database']);
             !in_array($this->systemCrontabTable, $allTables) && $this->createSystemCrontabTable();
             !in_array($this->currentSystemCrontabFlowTable, $allTables) && $this->createSystemCrontabFlowTable();
-            !in_array($this->systemCrontabLockTable, $allTables) && $this->createSystemCrontabLockTable();
+            if (in_array($this->systemCrontabLockTable, $allTables)) {
+                $this->crontabLockReset();
+            } else {
+                $this->createSystemCrontabLockTable();
+            }
         }
     }
 
