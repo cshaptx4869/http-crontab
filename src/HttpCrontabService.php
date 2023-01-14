@@ -62,10 +62,10 @@ class HttpCrontabService
     ];
 
     /**
-     * 数据库进程池
-     * @var Connection[] array
+     * 数据库句柄
+     * @var Connection
      */
-    private $dbPool = [];
+    private $db;
 
     /**
      * 任务进程池
@@ -214,21 +214,6 @@ class HttpCrontabService
     }
 
     /**
-     * 设置当前Worker实例启动多少个进程
-     * Worker主进程会 fork出 count个子进程同时监听相同的端口，并行的接收客户端连接，处理连接上的事件
-     * 默认为1
-     * windows系统不支持此特性
-     * @param int $count
-     * @return $this
-     */
-    public function setCount($count = 1)
-    {
-        $this->worker->count = $count;
-
-        return $this;
-    }
-
-    /**
      * 设置当前Worker实例以哪个用户运行
      * 此属性只有当前用户为root时才能生效，建议$user设置权限较低的用户
      * 默认以当前用户运行
@@ -239,19 +224,6 @@ class HttpCrontabService
     public function setUser($user = "root")
     {
         $this->worker->user = $user;
-
-        return $this;
-    }
-
-    /**
-     * 设置当前Worker实例的协议类
-     * 协议处理类可以直接在实例化Worker时在监听参数直接指定
-     * @param string $protocol
-     * @return $this
-     */
-    public function setProtocol($protocol)
-    {
-        $this->worker->protocol = $protocol;
 
         return $this;
     }
@@ -359,7 +331,7 @@ class HttpCrontabService
      */
     public function onWorkerStart($worker)
     {
-        $this->dbPool[$worker->id] = new Connection(
+        $this->db = new Connection(
             $this->dbConfig['hostname'],
             $this->dbConfig['hostport'],
             $this->dbConfig['username'],
@@ -481,7 +453,7 @@ class HttpCrontabService
      */
     private function crontabInit()
     {
-        $ids = $this->dbPool[$this->worker->id]
+        $ids = $this->db
             ->select('id')
             ->from($this->systemCrontabTable)
             ->where("status= :status")
@@ -508,7 +480,7 @@ class HttpCrontabService
         list($page, $limit, $where) = $this->buildTableParames($request->get());
         list($whereStr, $bindValues) = $this->parseWhere($where);
 
-        $data = $this->dbPool[$this->worker->id]
+        $data = $this->db
             ->select('*')
             ->from($this->systemCrontabTable)
             ->where($whereStr)
@@ -518,7 +490,7 @@ class HttpCrontabService
             ->bindValues($bindValues)
             ->query();
 
-        $count = $this->dbPool[$this->worker->id]
+        $count = $this->db
             ->select('count(id)')
             ->from($this->systemCrontabTable)
             ->where($whereStr)
@@ -537,7 +509,7 @@ class HttpCrontabService
     {
         $data = $request->post();
         $data['create_time'] = $data['update_time'] = time();
-        $id = $this->dbPool[$this->worker->id]
+        $id = $this->db
             ->insert($this->systemCrontabTable)
             ->cols($data)
             ->query();
@@ -555,7 +527,7 @@ class HttpCrontabService
     {
         $row = [];
         if ($id = $request->get('id')) {
-            $row = $this->dbPool[$this->worker->id]
+            $row = $this->db
                 ->select('*')
                 ->from($this->systemCrontabTable)
                 ->where('id= :id')
@@ -575,7 +547,7 @@ class HttpCrontabService
         if ($id = $request->get('id')) {
             $post = $request->post();
 
-            $row = $this->dbPool[$this->worker->id]
+            $row = $this->db
                 ->select('*')
                 ->from($this->systemCrontabTable)
                 ->where('id= :id')
@@ -585,7 +557,7 @@ class HttpCrontabService
                 return false;
             }
 
-            $rowCount = $this->dbPool[$this->worker->id]
+            $rowCount = $this->db
                 ->update($this->systemCrontabTable)
                 ->cols($post)
                 ->where('id = :id')
@@ -617,7 +589,7 @@ class HttpCrontabService
     {
         $post = $request->post();
         if (in_array($post['field'], ['status', 'sort'])) {
-            $row = $this->dbPool[$this->worker->id]
+            $row = $this->db
                 ->update($this->systemCrontabTable)
                 ->cols([$post['field']])
                 ->where('id = :id')
@@ -658,7 +630,7 @@ class HttpCrontabService
                 }
             }
 
-            $rows = $this->dbPool[$this->worker->id]
+            $rows = $this->db
                 ->delete($this->systemCrontabTable)
                 ->where('id in (' . $id . ')')
                 ->query();
@@ -683,7 +655,7 @@ class HttpCrontabService
                 $this->crontabPool[$id]['crontab']->destroy();
                 unset($this->crontabPool[$id]);
             }
-            $this->dbPool[$this->worker->id]
+            $this->db
                 ->update($this->systemCrontabTable)
                 ->cols(['status'])
                 ->where('id= :id')
@@ -709,7 +681,7 @@ class HttpCrontabService
      */
     private function crontabRun($id)
     {
-        $data = $this->dbPool[$this->worker->id]
+        $data = $this->db
             ->select('*')
             ->from($this->systemCrontabTable)
             ->where('id= :id')
@@ -736,7 +708,7 @@ class HttpCrontabService
                         $startTime = microtime(true);
                         exec($shell, $output, $code);
                         $endTime = microtime(true);
-                        $this->dbPool[$this->worker->id]->query("UPDATE {$this->systemCrontabTable} SET running_times = running_times + 1, last_running_time = {$time} WHERE id = {$data['id']}");
+                        $this->db->query("UPDATE {$this->systemCrontabTable} SET running_times = running_times + 1, last_running_time = {$time} WHERE id = {$data['id']}");
                         $this->crontabRunLog([
                             'sid' => $data['id'],
                             'command' => $shell,
@@ -795,7 +767,7 @@ class HttpCrontabService
         $data = [];
         $count = 0;
         if ($this->isTableExist($this->dbConfig['database'], $tableName)) {
-            $data = $this->dbPool[$this->worker->id]
+            $data = $this->db
                 ->select('*')
                 ->from($tableName)
                 ->where($whereStr)
@@ -805,7 +777,7 @@ class HttpCrontabService
                 ->bindValues($bindValues)
                 ->query();
 
-            $count = $this->dbPool[$this->worker->id]
+            $count = $this->db
                 ->select('count(id)')
                 ->from($tableName)
                 ->where($whereStr)
@@ -823,7 +795,7 @@ class HttpCrontabService
      */
     private function crontabRunLog(array $data)
     {
-        return $this->dbPool[$this->worker->id]
+        return $this->db
             ->insert($this->currentSystemCrontabFlowTable)
             ->cols($data)
             ->query();
@@ -836,7 +808,7 @@ class HttpCrontabService
      */
     private function isCrontabLocked($sid)
     {
-        $row = $this->dbPool[$this->worker->id]
+        $row = $this->db
             ->select('*')
             ->from($this->systemCrontabLockTable)
             ->where('sid = :sid')
@@ -844,7 +816,7 @@ class HttpCrontabService
             ->row();
         if (!$row) {
             $now = time();
-            $this->dbPool[$this->worker->id]
+            $this->db
                 ->insert($this->systemCrontabLockTable)
                 ->cols([
                     'sid' => $sid,
@@ -865,7 +837,7 @@ class HttpCrontabService
      */
     private function crontabLock($sid)
     {
-        return $this->dbPool[$this->worker->id]
+        return $this->db
             ->update($this->systemCrontabLockTable)
             ->cols(['is_lock' => 1, 'update_time' => time()])
             ->where('sid = :sid')
@@ -880,7 +852,7 @@ class HttpCrontabService
      */
     private function crontabUnlock($sid)
     {
-        return $this->dbPool[$this->worker->id]
+        return $this->db
             ->update($this->systemCrontabLockTable)
             ->cols(['is_lock' => 0, 'update_time' => time()])
             ->where('sid = :sid')
@@ -1000,7 +972,7 @@ class HttpCrontabService
     /**
      * 检测执行日志分表
      */
-    protected function checkCrontabFlowTable()
+    private function checkCrontabFlowTable()
     {
         $date = date('Ym', time());
         if ($date !== $this->systemCrontabFlowTableSuffix) {
@@ -1039,7 +1011,7 @@ class HttpCrontabService
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '定时器任务表' ROW_FORMAT = DYNAMIC
 SQL;
 
-        return $this->dbPool[$this->worker->id]->query($sql);
+        return $this->db->query($sql);
     }
 
     /**
@@ -1063,7 +1035,7 @@ CREATE TABLE IF NOT EXISTS `{$this->currentSystemCrontabFlowTable}`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '定时器任务流水表{$this->systemCrontabFlowTableSuffix}' ROW_FORMAT = DYNAMIC
 SQL;
 
-        return $this->dbPool[$this->worker->id]->query($sql);
+        return $this->db->query($sql);
     }
 
     /**
@@ -1084,7 +1056,7 @@ CREATE TABLE IF NOT EXISTS `{$this->systemCrontabLockTable}`  (
 ) ENGINE = InnoDB AUTO_INCREMENT = 1 CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '定时器任务锁表' ROW_FORMAT = DYNAMIC
 SQL;
 
-        return $this->dbPool[$this->worker->id]->query($sql);
+        return $this->db->query($sql);
     }
 
     /**
@@ -1094,7 +1066,7 @@ SQL;
      */
     private function getDbTables($dbname)
     {
-        return $this->dbPool[$this->worker->id]
+        return $this->db
             ->select('TABLE_NAME')
             ->from('information_schema.TABLES')
             ->where("TABLE_TYPE='BASE TABLE'")
@@ -1110,7 +1082,7 @@ SQL;
      */
     private function isTableExist($dbname, $tableName)
     {
-        return $this->dbPool[$this->worker->id]
+        return $this->db
                 ->select('TABLE_NAME')
                 ->from('information_schema.TABLES')
                 ->where("TABLE_TYPE='BASE TABLE'")
