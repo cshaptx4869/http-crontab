@@ -10,6 +10,7 @@ use Workerman\Crontab\Crontab;
 use Workerman\MySQL\Connection;
 use Workerman\Protocols\Http\Request;
 use Workerman\Protocols\Http\Response;
+use Workerman\Timer;
 use Workerman\Worker;
 
 /**
@@ -107,6 +108,12 @@ class HttpCrontabService
      * @var string|null
      */
     private $systemCrontabFlowTableSuffix;
+
+    /**
+     * 当前定时任务日志表
+     * @var string|null
+     */
+    private $currentSystemCrontabFlowTable;
 
     /**
      * 最低PHP版本
@@ -362,6 +369,9 @@ class HttpCrontabService
         );
         $this->checkCrontabTables();
         $this->crontabInit();
+        Timer::add(1, function () {
+            $this->checkCrontabFlowTable();
+        });
     }
 
     /**
@@ -391,7 +401,7 @@ class HttpCrontabService
      */
     public function onConnect($connection)
     {
-        $this->checkCrontabTables();
+
     }
 
     /**
@@ -539,7 +549,7 @@ class HttpCrontabService
     /**
      * 读取定时任务
      * @param Request $request
-     * @return bool
+     * @return array|bool
      */
     private function crontabRead($request)
     {
@@ -779,13 +789,12 @@ class HttpCrontabService
         $request->get('sid') && $where[] = ['sid', '=', $request->get('sid')];
         list($whereStr, $bindValues) = $this->parseWhere($where);
 
-        $allTables = $this->getDbTables($this->dbConfig['database']);
         $tableName = isset($excludeFields['month']) && !empty($excludeFields['month']) ?
-            preg_replace('/_\d+/', '_' . date('Ym', strtotime($excludeFields['month'])), $this->systemCrontabFlowTable) :
-            $this->systemCrontabFlowTable;
+            $this->systemCrontabFlowTable . '_' . date('Ym', strtotime($excludeFields['month'])) :
+            $this->currentSystemCrontabFlowTable;
         $data = [];
         $count = 0;
-        if (in_array($tableName, $allTables)) {
+        if ($this->isTableExist($this->dbConfig['database'], $tableName)) {
             $data = $this->dbPool[$this->worker->id]
                 ->select('*')
                 ->from($tableName)
@@ -815,7 +824,7 @@ class HttpCrontabService
     private function crontabRunLog(array $data)
     {
         return $this->dbPool[$this->worker->id]
-            ->insert($this->systemCrontabFlowTable)
+            ->insert($this->currentSystemCrontabFlowTable)
             ->cols($data)
             ->query();
     }
@@ -980,11 +989,26 @@ class HttpCrontabService
         $date = date('Ym', time());
         if ($date !== $this->systemCrontabFlowTableSuffix) {
             $this->systemCrontabFlowTableSuffix = $date;
-            $this->systemCrontabFlowTable .= "_" . $date;
+            $this->currentSystemCrontabFlowTable = $this->systemCrontabFlowTable . "_" . $this->systemCrontabFlowTableSuffix;
             $allTables = $this->getDbTables($this->dbConfig['database']);
             !in_array($this->systemCrontabTable, $allTables) && $this->createSystemCrontabTable();
-            !in_array($this->systemCrontabFlowTable, $allTables) && $this->createSystemCrontabFlowTable();
+            !in_array($this->currentSystemCrontabFlowTable, $allTables) && $this->createSystemCrontabFlowTable();
             !in_array($this->systemCrontabLockTable, $allTables) && $this->createSystemCrontabLockTable();
+        }
+    }
+
+    /**
+     * 检测执行日志分表
+     */
+    protected function checkCrontabFlowTable()
+    {
+        $date = date('Ym', time());
+        if ($date !== $this->systemCrontabFlowTableSuffix) {
+            $this->systemCrontabFlowTableSuffix = $date;
+            $this->currentSystemCrontabFlowTable = $this->systemCrontabFlowTable . "_" . $this->systemCrontabFlowTableSuffix;
+            if ($this->isTableExist($this->dbConfig['database'], $this->currentSystemCrontabFlowTable) === false) {
+                $this->createSystemCrontabFlowTable();
+            }
         }
     }
 
@@ -1024,7 +1048,7 @@ SQL;
     private function createSystemCrontabFlowTable()
     {
         $sql = <<<SQL
-CREATE TABLE IF NOT EXISTS `{$this->systemCrontabFlowTable}`  (
+CREATE TABLE IF NOT EXISTS `{$this->currentSystemCrontabFlowTable}`  (
   `id` int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
   `sid` int(60) NOT NULL COMMENT '任务id',
   `command` varchar(255) NOT NULL COMMENT '执行命令',
@@ -1076,6 +1100,23 @@ SQL;
             ->where("TABLE_TYPE='BASE TABLE'")
             ->where("TABLE_SCHEMA='" . $dbname . "'")
             ->column();
+    }
+
+    /**
+     * 数据表是否存在
+     * @param $dbname
+     * @param $tableName
+     * @return bool
+     */
+    private function isTableExist($dbname, $tableName)
+    {
+        return $this->dbPool[$this->worker->id]
+                ->select('TABLE_NAME')
+                ->from('information_schema.TABLES')
+                ->where("TABLE_TYPE='BASE TABLE'")
+                ->where("TABLE_SCHEMA='" . $dbname . "'")
+                ->where("TABLE_NAME='" . $tableName . "'")
+                ->single() !== false;
     }
 
     private function response($data = '', $msg = '信息调用成功！', $code = 200)
