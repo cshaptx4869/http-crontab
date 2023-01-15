@@ -23,14 +23,14 @@
 
 ## 简单使用
 
-**新建 run.php** 
+**新建 run.php**
 
 ```php
 <?php
 
 require_once "./vendor/autoload.php";
 
-use Fairy\HttpCrontabService;
+use Fairy\HttpCrontab;
 
 date_default_timezone_set('PRC');
 
@@ -48,7 +48,7 @@ $dbConfig = [
 
 //启动后默认监听 http://127.0.0.1:2345 
 //可在new的时候传递第一个参数改变监听地址
-(new HttpCrontabService())->setDebug(true)
+(new HttpCrontab())->setDebug(true)
     ->setName('System Crontab')
     ->setDbConfig($dbConfig)
     ->run();
