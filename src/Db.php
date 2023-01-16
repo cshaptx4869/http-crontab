@@ -122,7 +122,7 @@ class Db
             ->select('*')
             ->from($this->taskTable)
             ->where($whereStr)
-            ->orderByDESC(['id'])
+            ->orderByDESC(['sort'])
             ->limit($limit)
             ->offset(($page - 1) * $limit)
             ->bindValues($bindValues)
