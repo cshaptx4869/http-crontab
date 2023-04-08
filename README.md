@@ -6,7 +6,7 @@
 
 
 
-## 定时器格式说明：
+## 定时器格式说明
 
 ```
 0   1   2   3   4   5
@@ -23,7 +23,7 @@
 
 ## 简单使用
 
-**新建 run.php**
+- **新建 run.php**
 
 ```php
 <?php
@@ -54,11 +54,46 @@ $dbConfig = [
     ->run();
 ```
 
-**启动服务**
+- **启动服务**
 
 ![](https://i.loli.net/2021/09/23/dTGRMSjkQZyWIbH.png)
 
 
+
+## 集成项目
+
+[**easyadmin** ](https://github.com/cshaptx4869/easyadmin)是基于 ThinkPHP6.1 和 Layui2.7 的快速开发的后台管理系统。
+
+- **启动服务**
+
+![](https://foruda.gitee.com/images/1680915958035390338/0f322a61_5507348.jpeg)
+
+```bash
+$ php think crontab -h
+Usage:
+  crontab [options] [--] <action>
+
+Arguments:
+  action                start|stop|restart|reload|status|connections
+
+Options:
+  -d, --daemon          Run the http crontab server in daemon mode.
+      --name[=NAME]     Crontab name [default: "Crontab Server"]
+      --debug           Print log
+  -h, --help            Display this help message
+  -V, --version         Display this console version
+  -q, --quiet           Do not output any message
+      --ansi            Force ANSI output
+      --no-ansi         Disable ANSI output
+  -n, --no-interaction  Do not ask any interactive question
+  -v|vv|vvv, --verbose  Increase the verbosity of messages: 1 for normal output, 2 for more verbose output and 3 for debug
+```
+
+
+
+- **UI操作界面**
+
+![](https://foruda.gitee.com/images/1680915293572426711/2433d945_5507348.jpeg)
 
 
 
