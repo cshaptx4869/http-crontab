@@ -688,7 +688,7 @@ class HttpCrontab
                 'frequency' => $task['frequency'],
                 'remark' => $task['remark'],
                 'create_time' => date('Y-m-d H:i:s'),
-                'crontab' => new Crontab($task['frequency'], function () use ($task) {
+                'crontab' => new Crontab($task['frequency'], function () use (&$task) {
                     $shell = trim($task['shell']);
                     $this->debug && $this->writeln('执行定时器任务#' . $task['id'] . ' ' . $task['frequency'] . ' ' . $shell);
                     $sid = $task['id'];
@@ -702,8 +702,9 @@ class HttpCrontab
                         exec($shell, $output, $code);
                         $endTime = microtime(true);
 
+                        $task['running_times'] += 1;
                         $this->db->updateTask($task['id'], [
-                            'running_times' => $task['running_times'] + 1,
+                            'running_times' => $task['running_times'],
                             'last_running_time' => $time,
                         ]);
 
